@@ -1,0 +1,31 @@
+# 模型权重与转换产物，体积过大，不入库
+models/
+out/
+*.gguf
+*.rkllm
+*.safetensors
+*.bin
+
+# conda 环境与 Python 缓存
+envs/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 配置备份（patch_hf_config.py 生成的）
+*.v5bak
+*.bak
+
+# 日志与临时文件
+logs/
+*.log
+*.tar.gz
+*.out
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 本地路径覆盖（每人机器不同）
+local.env

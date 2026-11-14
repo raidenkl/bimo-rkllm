@@ -2,15 +2,15 @@
 
 把 [Bimo-7B-CyberAgent](https://huggingface.co/iBimo-o/Bimo-7B-CyberAgent)（Qwen2.5-Coder-7B-Instruct 的安全领域微调版）转成 RKLLM 的 w8a8 格式，跑在 RK3588 的 NPU 上。
 
-仓库里是自己写的转换脚本、板端部署脚本、量化校准数据和一份完整的踩坑记录。模型权重和厂商二进制都不在这里。
+仓库里有转换脚本、板端部署脚本、量化校准数据，还有一份完整的踩坑记录。模型权重和厂商二进制都不在这里。
 
 ## 先说结论
 
-7.6B 模型在 RK3588 上只有 w8a8 一条路，产物约 7.65GiB，运行峰值内存 7.17GB，16GB 板能跑，生成速度 3 tok/s 左右。
+7.6B 模型在 RK3588 上只有 w8a8 一条路。产物约 7.65GiB，运行峰值内存 7.17GB，16GB 板能跑，生成速度 3 tok/s 左右。
 
-如果你的板子是 8GB 内存，这个模型装不下，不用往下看了。
+板子只有 8GB 内存的话，这个模型装不下，不用往下看了。
 
-转换端的要求比板端苛刻得多：CPU 机器需要有 **150GB 以上内存**才能跑带校准的量化（`--algo normal`）。没有的话只能退到 `--algo none`，质量会有可见的下降，详见文末。
+转换端比板端苛刻得多。CPU 机器要 150GB 以上内存，才跑得动带校准的量化（`--algo normal`）；不够就只能退到 `--algo none`，质量有可见的下降，差在哪写在文末。
 
 ## 这个仓库不包含什么
 
@@ -22,7 +22,7 @@
 | `librkllmrt.so` | 7.5MB | 同上，在 `rkllm-runtime/Linux/librkllm_api/aarch64/` |
 | `llm_demo.cpp` / `rkllm.h` | 20KB | 同上，在 `examples/rkllm_api_demo/` |
 
-厂商二进制不重新分发，请从官方获取。版本要认准 **1.2.3**，板端 runtime 和转换工具链必须是同一个版本。
+厂商二进制不重新分发，从官方拿。版本认准 1.2.3，板端 runtime 和转换工具链必须是同一个。
 
 ## 目录结构
 
@@ -42,14 +42,14 @@
 │   ├── push_to_board.sh      推模型和运行时到板卡（rsync 或 adb）
 │   └── smoke_test.md         板端部署与验证手册，含实测数据
 ├── docs/
-│   └── Bimo-7B-RK3588-部署实录.md   完整过程记录，含所有报错原文
+│   └── deployment-log.md     完整过程记录，含所有报错原文
 ├── requirements-lock.txt     实测通过的版本组合
 └── NOTICE.md                 第三方组件与许可
 ```
 
 ## 在 160GB 内存的机器上转换
 
-下面的命令假设都用 `BIMO_ROOT` 指向工作目录，脚本会读这个环境变量。
+下面的命令都用 `BIMO_ROOT` 指工作目录，脚本会读这个环境变量。
 
 ```bash
 export BIMO_ROOT=/data/bimo
@@ -76,7 +76,7 @@ pip install --no-deps \
 pip install "setuptools<81"
 ```
 
-有 GPU 的话把 torch 换成对应 CUDA 版本，转换时 `dtype=float16` 能生效，峰值内存直接砍半，速度也快得多。CPU 上 fp16 和 bf16 都会被强制降级成 float32。
+有 GPU 的话把 torch 换成对应 CUDA 版本。转换时 `dtype=float16` 才生效，峰值内存少一半，速度也快不少。CPU 上 fp16 和 bf16 都会被强制降级成 float32。
 
 ### 2. 取权重
 
@@ -97,17 +97,19 @@ HF_ENDPOINT=https://hf-mirror.com hf download iBimo-o/Bimo-7B-CyberAgent \
   --local-dir $BIMO_ROOT/models/Bimo-hf
 ```
 
-下完核对一下哈希，`curl https://hf-mirror.com/api/models/iBimo-o/Bimo-7B-CyberAgent/tree/main` 里的 `lfs.oid` 就是 sha256。
+下完核对哈希。`curl https://hf-mirror.com/api/models/iBimo-o/Bimo-7B-CyberAgent/tree/main` 返回的 `lfs.oid` 就是 sha256。
 
 ### 3. 修配置
 
-这个仓库是 transformers v5 格式发布的，直接喂 4.x 会报 `'list' object has no attribute 'keys'`，而且 YaRN 参数会被静默丢掉。跑一次补丁脚本：
+这个仓库按 transformers v5 格式发布。直接喂 4.x 会报 `'list' object has no attribute 'keys'`；就算绕过去，YaRN 参数也会被静默丢掉，不报错，但长上下文就废了。
+
+跑一次补丁脚本：
 
 ```bash
 python scripts/patch_hf_config.py --model-dir $BIMO_ROOT/models/Bimo-hf
 ```
 
-脚本可重复执行，第二次跑会提示无需改动，原文件备份成 `*.v5bak`。
+脚本可以重复执行，第二次跑会提示无需改动。原文件备份成 `*.v5bak`。
 
 ### 4. 预检
 
@@ -115,7 +117,7 @@ python scripts/patch_hf_config.py --model-dir $BIMO_ROOT/models/Bimo-hf
 python scripts/check_env.py --model-dir $BIMO_ROOT/models/Bimo-hf --sdk $SDK
 ```
 
-会检查架构、Python 版本、依赖、toolkit 可用性、内存、磁盘、权重完整性，以及配置是否还是 v5 格式。有阻断项就先修，别急着开转。
+检查项有架构、Python 版本、依赖、toolkit 能否导入、内存与磁盘余量、权重完整性，最后还会确认配置是不是还没转成 v4。有阻断项就先修，别急着开转。
 
 ### 5. 转换
 
@@ -128,9 +130,9 @@ python scripts/export_bimo.py \
   --out $BIMO_ROOT/out/Bimo-7B-CyberAgent_w8a8_normal_rk3588_mc4096.rkllm
 ```
 
-耗时参考：64 核 CPU 上 `--algo none` 是 4 分钟，`--algo normal` 因为要做校准统计会慢不少，按小时计。
+耗时参考：64 核 CPU 上 `--algo none` 4 分钟就出结果；`--algo normal` 要做校准统计，慢得多，按小时算。
 
-转换期间盯着点：
+转换期间可以盯这两个：
 
 ```bash
 tr '\r' '\n' < /path/to/log | grep -E '^\[|ERROR' | tail -5
@@ -148,11 +150,11 @@ md5sum $RK          # 记下来，推板后核对
 xxd -l 48 $RK       # 头部 magic 是 daee b336
 ```
 
-体积低于 7GB 说明 embed 或 lm_head 被量化了，精度风险高；超过 10GB 说明线性层没量化成功。
+体积低于 7GB，说明 embed 或 lm_head 被量化了，精度风险高。超过 10GB 则说明线性层没量化成功。
 
 ## 已知的平台限制
 
-这几条是实测出来的，不是文档抄的，动手前值得看一眼。
+这几条都是实测出来的，不是从文档抄的。动手前值得扫一眼。
 
 | 限制 | 说明 |
 | --- | --- |
@@ -172,20 +174,20 @@ export RKLLM_LOG_LEVEL=1        # 开了才会打印性能与峰值内存
 ./llm_demo $HOME/bimo/*.rkllm 256 4096
 ```
 
-完整步骤、四个冒烟用例、常见报错对照表都在 `deploy/smoke_test.md`。
+完整步骤、四个冒烟用例、常见报错对照表在 `deploy/smoke_test.md`。
 
-实测数据（LubanCat-5 V2，16GB，内核 6.1.99，rknpu 0.9.8）：初始化 6.7–7.1 秒，prefill 50–56 tok/s，生成 2.95–3.13 tok/s，峰值内存 7.17GB。
+实测环境是 LubanCat-5 V2，16GB 内存，内核 6.1.99，rknpu 0.9.8。初始化 6.7–7.1 秒，prefill 50–56 tok/s，生成 2.95–3.13 tok/s，峰值内存 7.17GB。
 
 ## 关于 `--algo none`
 
-如果转换机内存不够，只能退到 `--algo none`。它跳过校准优化，激活量化范围直接按全局极值切分，代价是：
+转换机内存不够时只能退到 `--algo none`。它跳过校准优化，激活量化范围按全局极值直接切，代价是这几条：
 
 - 回答中途会中英混切
-- 生成常在 110–160 token 处提前结束（即使 `max_new_tokens` 设更大）
-- 逐行枚举类任务耐心不足，给十行日志只分析前三条就停
-- 定向提问的效果明显好于开放式的"全面分析"
+- 生成常在 110–160 token 处提前结束，`max_new_tokens` 调大也一样
+- 逐行枚举类任务没耐心，给十行日志只分析前三条就停
+- 定向提问明显好于开放式的"全面分析"
 
-如果这些影响业务，还是想办法找台大内存机器重转，`--algo normal` 的差别是实打实的。
+影响业务的话，还是想办法找台大内存机器重转。`--algo normal` 的差别是实打实的。
 
 ## 许可
 
